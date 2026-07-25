@@ -118,6 +118,13 @@ class AppState: Sendable {
             GeneralSettingsPane()
           },
           Settings.Pane(
+            identifier: Settings.PaneIdentifier.screenshot,
+            title: NSLocalizedString("Title", tableName: "ScreenshotSettings", comment: ""),
+            toolbarIcon: NSImage.camera!
+          ) {
+            ScreenshotSettingsPane()
+          },
+          Settings.Pane(
             identifier: Settings.PaneIdentifier.storage,
             title: NSLocalizedString("Title", tableName: "StorageSettings", comment: ""),
             toolbarIcon: NSImage.externaldrive!
