@@ -13,7 +13,6 @@ final class ScreenshotCoordinator {
     static let shared = ScreenshotCoordinator()
 
     private var overlayWindow: ScreenshotOverlayWindow?
-    private var shortcutToken: KeyboardShortcuts.OnKeyDown?
 
     private init() {}
 
@@ -32,7 +31,7 @@ final class ScreenshotCoordinator {
     /// The handler checks `screenshotEnabled` at trigger time, so the
     /// shortcut can be recorded even while the feature is off.
     func registerShortcut() {
-        shortcutToken = KeyboardShortcuts.onKeyDown(for: .screenshot) { [weak self] in
+        KeyboardShortcuts.onKeyDown(for: .screenshot) { [weak self] in
             self?.handleShortcut()
         }
     }
@@ -43,16 +42,11 @@ final class ScreenshotCoordinator {
         guard Defaults[.screenshotEnabled] else { return }
         guard overlayWindow == nil else { return } // already in progress
 
-        if !ScreenshotCapture.hasPermission() {
-            ScreenshotCapture.requestPermission()
-            Notifier.notify(body: NSLocalizedString(
-                "ScreenCapturePermissionNeeded",
-                tableName: "ScreenshotSettings",
-                comment: ""
-            ), sound: nil)
-            return
-        }
-
+        // Note: CGPreflightScreenCaptureAccess() is unreliable in ad-hoc signed
+        // sandboxed apps (may return false even after user grants permission).
+        // Skip the preflight check and go straight to the overlay. If permission
+        // is missing, CGWindowListCreateImage returns a blank image instead of
+        // crashing, and the user can grant permission via System Settings.
         showOverlay()
     }
 
@@ -94,7 +88,7 @@ final class ScreenshotCoordinator {
     }
 
     private func closeOverlay() {
-        overlayWindow?.orderOut(nil)
+        overlayWindow?.dismiss()
         overlayWindow = nil
     }
 

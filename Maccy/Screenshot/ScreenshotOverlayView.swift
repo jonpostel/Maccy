@@ -17,6 +17,10 @@ final class ScreenshotOverlayView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { false }
 
+    /// Allow the first mouse-down to be received without an extra click to
+    /// activate the window. This makes the drag-to-select work immediately.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     // MARK: - Mouse handling
 
     override func mouseDown(with event: NSEvent) {
@@ -80,7 +84,7 @@ final class ScreenshotOverlayView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        // Dim the entire screen.
+        // 1. Dim the entire screen with a darker mask for stronger contrast.
         NSColor.black.withAlphaComponent(ScreenshotConstants.overlayDimAlpha).setFill()
         bounds.fill()
 
@@ -88,17 +92,20 @@ final class ScreenshotOverlayView: NSView {
 
         let selection = normalizedRect(from: start, to: end)
 
-        // Punch a hole: clear the selection so the underlying screen shows through.
+        // 2. Punch a hole: clear the selection so the underlying screen shows through.
         NSColor.clear.setFill()
-        NSRect.fill(selection)
+        selection.fill()
 
-        // Selection border.
+        // 3. Selection border (bright blue).
         ScreenshotConstants.selectionBorderColor.setStroke()
-        let path = NSBezierPath(rect: selection)
-        path.lineWidth = ScreenshotConstants.selectionBorderWidth
-        path.stroke()
+        let borderPath = NSBezierPath(rect: selection)
+        borderPath.lineWidth = ScreenshotConstants.selectionBorderWidth
+        borderPath.stroke()
 
-        // Size label.
+        // 4. Corner handles (L-shaped marks at each corner).
+        drawCornerHandles(for: selection)
+
+        // 5. Size label.
         drawSizeLabel("\(Int(selection.width)) × \(Int(selection.height))", near: selection)
     }
 
@@ -112,6 +119,39 @@ final class ScreenshotOverlayView: NSView {
         return NSRect(x: x, y: y, width: w, height: h)
     }
 
+    private func drawCornerHandles(for rect: NSRect) {
+        let length = ScreenshotConstants.cornerHandleLength
+        let width = ScreenshotConstants.cornerHandleWidth
+        let color = ScreenshotConstants.selectionBorderColor
+
+        color.setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = width
+        path.lineCapStyle = .round
+
+        // Top-left corner (L shape).
+        path.move(to: NSPoint(x: rect.minX, y: rect.maxY - length))
+        path.line(to: NSPoint(x: rect.minX, y: rect.maxY))
+        path.line(to: NSPoint(x: rect.minX + length, y: rect.maxY))
+
+        // Top-right corner.
+        path.move(to: NSPoint(x: rect.maxX - length, y: rect.maxY))
+        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+        path.line(to: NSPoint(x: rect.maxX, y: rect.maxY - length))
+
+        // Bottom-right corner.
+        path.move(to: NSPoint(x: rect.maxX, y: rect.minY + length))
+        path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
+        path.line(to: NSPoint(x: rect.maxX - length, y: rect.minY))
+
+        // Bottom-left corner.
+        path.move(to: NSPoint(x: rect.minX + length, y: rect.minY))
+        path.line(to: NSPoint(x: rect.minX, y: rect.minY))
+        path.line(to: NSPoint(x: rect.minX, y: rect.minY + length))
+
+        path.stroke()
+    }
+
     private func drawSizeLabel(_ text: String, near rect: NSRect) {
         let attrs: [NSAttributedString.Key: Any] = [
             .font: ScreenshotConstants.sizeLabelFont,
@@ -122,23 +162,33 @@ final class ScreenshotOverlayView: NSView {
         let padding = ScreenshotConstants.sizeLabelPadding
         let offset = ScreenshotConstants.sizeLabelOffset
 
+        // Place the label just outside the bottom-right corner of the selection.
         var labelRect = NSRect(
-            x: rect.minX,
-            y: rect.minY - size.height - offset,
+            x: rect.maxX + offset,
+            y: rect.maxY + offset,
             width: size.width + padding * 2,
             height: size.height + padding
         )
-        // If the label would fall below the selection, put it above.
-        if labelRect.minY < bounds.minY {
-            labelRect.origin.y = rect.maxY + offset
+
+        // If the label would overflow the right edge, place it inside the selection.
+        if labelRect.maxX > bounds.maxX {
+            labelRect.origin.x = rect.maxX - labelRect.width - offset
+        }
+        // If the label would overflow the top edge, place it below the selection.
+        if labelRect.maxY > bounds.maxY {
+            labelRect.origin.y = rect.minY - labelRect.height - offset
         }
         // Clamp horizontally.
-        if labelRect.maxX > bounds.maxX {
-            labelRect.origin.x = bounds.maxX - labelRect.width
+        if labelRect.minX < bounds.minX {
+            labelRect.origin.x = bounds.minX + offset
+        }
+        // Clamp vertically.
+        if labelRect.minY < bounds.minY {
+            labelRect.origin.y = bounds.minY + offset
         }
 
         ScreenshotConstants.sizeLabelBackgroundColor.setFill()
-        NSBezierPath(roundedRect: labelRect, xRadius: 3, yRadius: 3).fill()
+        NSBezierPath(roundedRect: labelRect, xRadius: 4, yRadius: 4).fill()
 
         let textOrigin = NSPoint(
             x: labelRect.minX + padding,

@@ -14,15 +14,13 @@ final class ScreenshotOverlayWindow: NSWindow {
             contentRect: frame,
             styleMask: [.borderless],
             backing: .buffered,
-            defer: false,
-            screen: screen
+            defer: false
         )
 
         // Appear above everything (including Maccy's own popup).
         level = .screenSaver
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = false
         ignoresMouseEvents = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         isMovable = false
@@ -42,5 +40,14 @@ final class ScreenshotOverlayWindow: NSWindow {
         orderFrontRegardless()
         makeKey()
         overlayView.window?.makeFirstResponder(overlayView)
+        // Push the crosshair cursor onto the stack so it takes effect
+        // immediately, even before the mouse enters the overlay view.
+        NSCursor.crosshair.push()
+    }
+
+    /// Dismiss the overlay and restore the previous cursor.
+    func dismiss() {
+        NSCursor.pop()
+        orderOut(nil)
     }
 }

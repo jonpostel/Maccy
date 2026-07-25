@@ -8,7 +8,7 @@ struct ScreenshotSettingsPane: View {
 
     var body: some View {
         Settings.Container(contentWidth: 450) {
-            Settings.Section(bottomDivider: true) {
+            Settings.Section(title: "", bottomDivider: true) {
                 Toggle(isOn: $screenshotEnabled) {
                     Text("EnableScreenshot", tableName: "ScreenshotSettings")
                 }
