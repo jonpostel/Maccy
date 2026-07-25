@@ -7,6 +7,7 @@ extension NSImage {
   static let pincircle = NSImage(systemSymbolName: "pin.circle", accessibilityDescription: "pin.cirlce")
   static let nosign = NSImage(systemSymbolName: "nosign", accessibilityDescription: "nosign")
   static let gearshape2 = NSImage(systemSymbolName: "gearshape.2", accessibilityDescription: "gearshape2")
+  static let camera = NSImage(systemSymbolName: "camera", accessibilityDescription: "camera")
 }
 
 extension NSImage.Name {

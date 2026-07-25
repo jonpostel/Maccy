@@ -1,0 +1,8 @@
+"Title" = "截图";
+"EnableScreenshot" = "启用截图快捷键";
+"EnableScreenshotTooltip" = "启用后，按下设置的快捷键即可开始区域截图。";
+"EnableScreenshotDescription" = "拖动鼠标选择屏幕区域。截图将以 Maccy-<时间戳>.png 的名称复制到剪贴板。";
+"ScreenshotShortcut" = "快捷键：";
+"ScreenshotShortcutTooltip" = "启动截图的全局快捷键。无默认值，需自行设置。";
+"ScreenshotUsage" = "按下快捷键，拖动选择区域，松开即可截图。按 Esc 取消。需要屏幕录制权限。";
+"ScreenCapturePermissionNeeded" = "Maccy 需要屏幕录制权限才能截图。请在系统设置中授予。";

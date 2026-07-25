@@ -37,8 +37,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Bridge FloatingPanel via AppDelegate.
     AppState.shared.appDelegate = self
 
+    ScreenshotCoordinator.shared.registerClipboardHook()
     Clipboard.shared.onNewCopy { History.shared.add($0) }
     Clipboard.shared.start()
+    ScreenshotCoordinator.shared.registerShortcut()
 
     Task {
       for await _ in Defaults.updates(.clipboardCheckInterval, initial: false) {

@@ -1,0 +1,8 @@
+"Title" = "Screenshot";
+"EnableScreenshot" = "Enable screenshot shortcut";
+"EnableScreenshotTooltip" = "When enabled, pressing the configured shortcut starts a region screenshot.";
+"EnableScreenshotDescription" = "Drag to select an area of the screen. The screenshot is copied to the clipboard as Maccy-<timestamp>.png.";
+"ScreenshotShortcut" = "Shortcut:";
+"ScreenshotShortcutTooltip" = "Global shortcut to start a screenshot. No default — you must set one.";
+"ScreenshotUsage" = "Press the shortcut, drag to select, release to capture. Press Esc to cancel. Screen Recording permission is required.";
+"ScreenCapturePermissionNeeded" = "Maccy needs Screen Recording permission to take screenshots. Please grant it in System Settings.";
