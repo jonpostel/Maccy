@@ -80,11 +80,9 @@ final class ScreenshotOverlayView: NSView {
         dragStartPoint = viewPoint
         currentDragPoint = viewPoint
         isDragging = false
-
-        // Clear window highlight when starting a potential drag.
-        highlightedWindowID = nil
-        highlightedWindowRect = nil
-        needsDisplay = true
+        // NOTE: Do not clear `highlightedWindowID` here — it's needed by
+        // `mouseUp` to decide whether to capture the highlighted window.
+        // It will be cleared in `mouseDragged` once a real drag starts.
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -98,6 +96,9 @@ final class ScreenshotOverlayView: NSView {
             let dy = viewPoint.y - startPoint.y
             if hypot(dx, dy) > dragThreshold {
                 isDragging = true
+                // Clear window highlight once a real drag starts.
+                highlightedWindowID = nil
+                highlightedWindowRect = nil
             }
         }
 
@@ -132,28 +133,35 @@ final class ScreenshotOverlayView: NSView {
             return
         }
 
-        // Single click → capture the highlighted window (after a short delay
-        // to allow a potential double-click to take precedence).
-        if let windowID = highlightedWindowID {
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self else { return }
+        // Single click — defer the action by `doubleClickDelay` so a potential
+        // second click (double-click) can take precedence. This avoids the
+        // first click of a double-click from immediately canceling/capturing.
+        let windowID = highlightedWindowID
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if let windowID {
                 self.onWindowCapture?(windowID)
+            } else {
+                self.onSelectionCancel?()
             }
-            pendingSingleClick = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickDelay, execute: workItem)
-        } else {
-            // No window highlighted — cancel.
-            onSelectionCancel?()
         }
+        pendingSingleClick = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickDelay, execute: workItem)
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        pendingSingleClick?.cancel()
+        pendingSingleClick = nil
         onSelectionCancel?()
     }
 
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // Cancel any pending single-click so it doesn't fire after a keyboard action.
+        pendingSingleClick?.cancel()
+        pendingSingleClick = nil
+
         switch event.keyCode {
         case 53: // ESC
             onSelectionCancel?()
@@ -169,6 +177,8 @@ final class ScreenshotOverlayView: NSView {
     }
 
     override func cancelOperation(_ sender: Any?) {
+        pendingSingleClick?.cancel()
+        pendingSingleClick = nil
         onSelectionCancel?()
     }
 
@@ -184,10 +194,16 @@ final class ScreenshotOverlayView: NSView {
         // Convert view point → window point → screen point → CG screen point.
         let windowPoint = convert(viewPoint, to: nil)
         guard let screenPoint = window?.convertToScreen(windowPoint) else { return }
-        guard let screenHeight = window?.screen?.frame.height else { return }
+
+        // CG global display coordinates use the primary screen's top-left as
+        // origin (y down). NS global screen coordinates use the primary
+        // screen's bottom-left as origin (y up). Use the primary screen's
+        // height to flip the Y, regardless of which screen the overlay is on.
+        guard let mainScreen = NSScreen.screens.first else { return }
+        let mainScreenHeight = mainScreen.frame.height
 
         // CG uses top-left origin; NS uses bottom-left.
-        let cgPoint = CGPoint(x: screenPoint.x, y: screenHeight - screenPoint.y)
+        let cgPoint = CGPoint(x: screenPoint.x, y: mainScreenHeight - screenPoint.y)
 
         if let result = ScreenshotCapture.windowAtPoint(cgPoint, excludingWindowID: overlayWindowID) {
             if highlightedWindowID != result.windowID {
@@ -204,15 +220,17 @@ final class ScreenshotOverlayView: NSView {
 
     /// Converts a CGRect in CG screen coordinates to this view's coordinate space.
     private func convertCGRectToView(_ cgRect: CGRect) -> NSRect {
-        guard let screen = window?.screen else { return .zero }
-        let screenHeight = screen.frame.height
+        // CGWindowBounds are global display coordinates (origin at the primary
+        // screen's top-left, y down). Convert to NS global screen coordinates
+        // (origin at the primary screen's bottom-left, y up) using the primary
+        // screen's height.
+        guard let mainScreen = NSScreen.screens.first else { return .zero }
+        let mainScreenHeight = mainScreen.frame.height
 
-        // CG rect: origin top-left, y down.
-        // NS screen rect: origin bottom-left, y up.
-        let nsScreenY = screenHeight - cgRect.origin.y - cgRect.height
+        let nsScreenY = mainScreenHeight - cgRect.origin.y - cgRect.height
         let screenRect = NSRect(
-            x: cgRect.origin.x + screen.frame.origin.x,
-            y: nsScreenY + screen.frame.origin.y,
+            x: cgRect.origin.x,
+            y: nsScreenY,
             width: cgRect.width,
             height: cgRect.height
         )
@@ -231,9 +249,9 @@ final class ScreenshotOverlayView: NSView {
 
         // Draw the highlighted window (if any and not dragging).
         if !isDragging, let highlightRect = highlightedWindowRect {
-            // Clear the highlighted window area.
-            NSColor.clear.setFill()
-            highlightRect.fill()
+            // "Cut out" the highlighted window area so the underlying window
+            // shows through clearly (instead of being dimmed).
+            highlightRect.fill(using: .clear)
 
             // Draw a bright border around the highlighted window.
             ScreenshotConstants.selectionBorderColor.setStroke()
@@ -248,8 +266,8 @@ final class ScreenshotOverlayView: NSView {
         if isDragging, let start = dragStartPoint, let end = currentDragPoint {
             let selection = normalizedRect(from: start, to: end)
 
-            NSColor.clear.setFill()
-            selection.fill()
+            // "Cut out" the selection area.
+            selection.fill(using: .clear)
 
             ScreenshotConstants.selectionBorderColor.setStroke()
             let path = NSBezierPath(rect: selection)
