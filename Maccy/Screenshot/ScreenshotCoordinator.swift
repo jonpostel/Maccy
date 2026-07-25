@@ -56,9 +56,18 @@ final class ScreenshotCoordinator {
         guard let screen = NSScreen.main else { return }
 
         let window = ScreenshotOverlayWindow(screen: screen)
+
         window.overlayView.onSelectionComplete = { [weak self, weak window] screenRect in
             guard let self, let window else { return }
             self.completeSelection(screenRect: screenRect, overlayWindow: window)
+        }
+        window.overlayView.onWindowCapture = { [weak self, weak window] windowID in
+            guard let self, let window else { return }
+            self.completeWindowCapture(targetWindowID: windowID, overlayWindow: window)
+        }
+        window.overlayView.onFullScreenCapture = { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.completeFullScreenCapture(overlayWindow: window)
         }
         window.overlayView.onSelectionCancel = { [weak self, weak window] in
             guard let self, let window else { return }
@@ -67,16 +76,41 @@ final class ScreenshotCoordinator {
 
         overlayWindow = window
         window.show()
+
+        // Set the overlay window ID after display so windowNumber is valid.
+        window.overlayView.overlayWindowID = CGWindowID(window.windowNumber)
     }
 
     private func completeSelection(screenRect: NSRect, overlayWindow window: ScreenshotOverlayWindow) {
-        let windowID = CGWindowID(window.windowNumber)
+        let overlayID = CGWindowID(window.windowNumber)
 
         // Close the overlay first so it doesn't linger; we exclude it from
         // capture by window ID as well (belt-and-suspenders).
         closeOverlay()
 
-        guard let image = ScreenshotCapture.capture(rect: screenRect, excludingWindowID: windowID) else {
+        guard let image = ScreenshotCapture.capture(rect: screenRect, excludingWindowID: overlayID) else {
+            return
+        }
+
+        saveToClipboard(image: image)
+    }
+
+    private func completeWindowCapture(targetWindowID: CGWindowID, overlayWindow window: ScreenshotOverlayWindow) {
+        closeOverlay()
+
+        guard let image = ScreenshotCapture.capture(windowID: targetWindowID) else {
+            return
+        }
+
+        saveToClipboard(image: image)
+    }
+
+    private func completeFullScreenCapture(overlayWindow window: ScreenshotOverlayWindow) {
+        let overlayID = CGWindowID(window.windowNumber)
+        closeOverlay()
+
+        // Re-capture including all on-screen windows, excluding the overlay.
+        guard let image = ScreenshotCapture.capture(rect: NSScreen.main?.frame ?? .zero, excludingWindowID: overlayID) else {
             return
         }
 

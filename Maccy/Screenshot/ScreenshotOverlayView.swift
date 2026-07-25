@@ -1,74 +1,171 @@
 import AppKit
 
-/// Fullscreen view that dims the screen, lets the user drag a selection
-/// rectangle, and reports the selection (in screen coordinates) or cancellation.
+/// Fullscreen overlay for screenshot selection.
+///
+/// Interaction model:
+/// - Mouse moves → highlight the window under the cursor.
+/// - Single click → capture the highlighted window.
+/// - Drag → free-form rectangular selection.
+/// - Double click → capture the entire screen.
+/// - Right click or ESC → cancel.
+/// - Return → capture the highlighted window.
 final class ScreenshotOverlayView: NSView {
 
     /// Called with the selection rectangle in screen (global) coordinates.
     var onSelectionComplete: ((NSRect) -> Void)?
 
-    /// Called when the user cancels (ESC or click without drag).
+    /// Called with the CGWindowID of the window to capture.
+    var onWindowCapture: ((CGWindowID) -> Void)?
+
+    /// Called to capture the entire screen.
+    var onFullScreenCapture: (() -> Void)?
+
+    /// Called when the user cancels (ESC, right click, or click without drag).
     var onSelectionCancel: (() -> Void)?
 
-    private var startPoint: NSPoint?
-    private var currentPoint: NSPoint?
-    private var isSelecting = false
+    // MARK: - State
+
+    private var dragStartPoint: NSPoint?
+    private var currentDragPoint: NSPoint?
+    private var isDragging = false
+
+    private var highlightedWindowID: CGWindowID?
+    private var highlightedWindowRect: NSRect?
+
+    private var pendingSingleClick: DispatchWorkItem?
+
+    private let dragThreshold: CGFloat = 5.0
+    private let doubleClickDelay: TimeInterval = 0.25
+
+    /// The overlay window's own CGWindowID, used to exclude it from window detection.
+    var overlayWindowID: CGWindowID = 0
+
+    // MARK: - Setup
 
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { false }
 
-    /// Allow the first mouse-down to be received without an extra click to
-    /// activate the window. This makes the drag-to-select work immediately.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    // MARK: - Mouse handling
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        // Remove old tracking areas and add a fresh one covering the full bounds
+        // so mouseMoved fires even without holding a button.
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+    }
+
+    // MARK: - Mouse tracking
+
+    override func mouseMoved(with event: NSEvent) {
+        guard !isDragging else { return }
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        updateHighlightedWindow(at: viewPoint)
+    }
 
     override func mouseDown(with event: NSEvent) {
-        startPoint = convert(event.locationInWindow, from: nil)
-        currentPoint = startPoint
-        isSelecting = true
+        // Cancel any pending single-click from a previous click.
+        pendingSingleClick?.cancel()
+        pendingSingleClick = nil
+
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        dragStartPoint = viewPoint
+        currentDragPoint = viewPoint
+        isDragging = false
+
+        // Clear window highlight when starting a potential drag.
+        highlightedWindowID = nil
+        highlightedWindowRect = nil
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard isSelecting else { return }
-        currentPoint = convert(event.locationInWindow, from: nil)
-        needsDisplay = true
+        guard let startPoint = dragStartPoint else { return }
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        currentDragPoint = viewPoint
+
+        // Once the mouse moves beyond the drag threshold, enter selection mode.
+        if !isDragging {
+            let dx = viewPoint.x - startPoint.x
+            let dy = viewPoint.y - startPoint.y
+            if hypot(dx, dy) > dragThreshold {
+                isDragging = true
+            }
+        }
+
+        if isDragging {
+            needsDisplay = true
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard isSelecting, let start = startPoint, let end = currentPoint else {
-            onSelectionCancel?()
-            return
-        }
-        isSelecting = false
-
-        let selectionRect = normalizedRect(from: start, to: end)
-        guard selectionRect.width >= ScreenshotConstants.minSelectionSize,
-              selectionRect.height >= ScreenshotConstants.minSelectionSize else {
-            // Treat as a click — cancel.
-            onSelectionCancel?()
+        // Double click → capture full screen.
+        if event.clickCount >= 2 {
+            onFullScreenCapture?()
             return
         }
 
-        // Convert view rect → window rect → screen rect.
-        let windowRect = convert(selectionRect, to: nil)
-        guard let screenRect = window?.convertToScreen(windowRect) else {
-            onSelectionCancel?()
+        // Drag selection → capture the selected rect.
+        if isDragging, let start = dragStartPoint, let end = currentDragPoint {
+            isDragging = false
+            let selectionRect = normalizedRect(from: start, to: end)
+            guard selectionRect.width >= ScreenshotConstants.minSelectionSize,
+                  selectionRect.height >= ScreenshotConstants.minSelectionSize else {
+                onSelectionCancel?()
+                return
+            }
+
+            let windowRect = convert(selectionRect, to: nil)
+            guard let screenRect = window?.convertToScreen(windowRect) else {
+                onSelectionCancel?()
+                return
+            }
+            onSelectionComplete?(screenRect)
             return
         }
-        onSelectionComplete?(screenRect)
+
+        // Single click → capture the highlighted window (after a short delay
+        // to allow a potential double-click to take precedence).
+        if let windowID = highlightedWindowID {
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.onWindowCapture?(windowID)
+            }
+            pendingSingleClick = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + doubleClickDelay, execute: workItem)
+        } else {
+            // No window highlighted — cancel.
+            onSelectionCancel?()
+        }
     }
 
-    // MARK: - Keyboard handling
+    override func rightMouseDown(with event: NSEvent) {
+        onSelectionCancel?()
+    }
+
+    // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
-        // 53 = ESC
-        if event.keyCode == 53 {
+        switch event.keyCode {
+        case 53: // ESC
             onSelectionCancel?()
-            return
+        case 36: // Return
+            if let windowID = highlightedWindowID {
+                onWindowCapture?(windowID)
+            } else {
+                onFullScreenCapture?()
+            }
+        default:
+            super.keyDown(with: event)
         }
-        super.keyDown(with: event)
     }
 
     override func cancelOperation(_ sender: Any?) {
@@ -81,32 +178,87 @@ final class ScreenshotOverlayView: NSView {
         addCursorRect(bounds, cursor: .crosshair)
     }
 
+    // MARK: - Window detection
+
+    private func updateHighlightedWindow(at viewPoint: NSPoint) {
+        // Convert view point → window point → screen point → CG screen point.
+        let windowPoint = convert(viewPoint, to: nil)
+        guard let screenPoint = window?.convertToScreen(windowPoint) else { return }
+        guard let screenHeight = window?.screen?.frame.height else { return }
+
+        // CG uses top-left origin; NS uses bottom-left.
+        let cgPoint = CGPoint(x: screenPoint.x, y: screenHeight - screenPoint.y)
+
+        if let result = ScreenshotCapture.windowAtPoint(cgPoint, excludingWindowID: overlayWindowID) {
+            if highlightedWindowID != result.windowID {
+                highlightedWindowID = result.windowID
+                highlightedWindowRect = convertCGRectToView(result.rect)
+                needsDisplay = true
+            }
+        } else if highlightedWindowID != nil {
+            highlightedWindowID = nil
+            highlightedWindowRect = nil
+            needsDisplay = true
+        }
+    }
+
+    /// Converts a CGRect in CG screen coordinates to this view's coordinate space.
+    private func convertCGRectToView(_ cgRect: CGRect) -> NSRect {
+        guard let screen = window?.screen else { return .zero }
+        let screenHeight = screen.frame.height
+
+        // CG rect: origin top-left, y down.
+        // NS screen rect: origin bottom-left, y up.
+        let nsScreenY = screenHeight - cgRect.origin.y - cgRect.height
+        let screenRect = NSRect(
+            x: cgRect.origin.x + screen.frame.origin.x,
+            y: nsScreenY + screen.frame.origin.y,
+            width: cgRect.width,
+            height: cgRect.height
+        )
+
+        // Convert screen rect → window rect → view rect.
+        let windowRect = window?.convertFromScreen(screenRect) ?? screenRect
+        return convert(windowRect, from: nil)
+    }
+
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        // 1. Dim the entire screen with a darker mask for stronger contrast.
+        // Dim the entire screen.
         NSColor.black.withAlphaComponent(ScreenshotConstants.overlayDimAlpha).setFill()
         bounds.fill()
 
-        guard isSelecting, let start = startPoint, let end = currentPoint else { return }
+        // Draw the highlighted window (if any and not dragging).
+        if !isDragging, let highlightRect = highlightedWindowRect {
+            // Clear the highlighted window area.
+            NSColor.clear.setFill()
+            highlightRect.fill()
 
-        let selection = normalizedRect(from: start, to: end)
+            // Draw a bright border around the highlighted window.
+            ScreenshotConstants.selectionBorderColor.setStroke()
+            let path = NSBezierPath(rect: highlightRect)
+            path.lineWidth = ScreenshotConstants.selectionBorderWidth
+            path.stroke()
 
-        // 2. Punch a hole: clear the selection so the underlying screen shows through.
-        NSColor.clear.setFill()
-        selection.fill()
+            drawCornerHandles(for: highlightRect)
+        }
 
-        // 3. Selection border (bright blue).
-        ScreenshotConstants.selectionBorderColor.setStroke()
-        let borderPath = NSBezierPath(rect: selection)
-        borderPath.lineWidth = ScreenshotConstants.selectionBorderWidth
-        borderPath.stroke()
+        // Draw the drag selection (if dragging).
+        if isDragging, let start = dragStartPoint, let end = currentDragPoint {
+            let selection = normalizedRect(from: start, to: end)
 
-        // 4. Corner handles (L-shaped marks at each corner).
-        drawCornerHandles(for: selection)
+            NSColor.clear.setFill()
+            selection.fill()
 
-        // 5. Size label.
-        drawSizeLabel("\(Int(selection.width)) × \(Int(selection.height))", near: selection)
+            ScreenshotConstants.selectionBorderColor.setStroke()
+            let path = NSBezierPath(rect: selection)
+            path.lineWidth = ScreenshotConstants.selectionBorderWidth
+            path.stroke()
+
+            drawCornerHandles(for: selection)
+            drawSizeLabel("\(Int(selection.width)) × \(Int(selection.height))", near: selection)
+        }
     }
 
     // MARK: - Helpers
@@ -129,22 +281,22 @@ final class ScreenshotOverlayView: NSView {
         path.lineWidth = width
         path.lineCapStyle = .round
 
-        // Top-left corner (L shape).
+        // Top-left
         path.move(to: NSPoint(x: rect.minX, y: rect.maxY - length))
         path.line(to: NSPoint(x: rect.minX, y: rect.maxY))
         path.line(to: NSPoint(x: rect.minX + length, y: rect.maxY))
 
-        // Top-right corner.
+        // Top-right
         path.move(to: NSPoint(x: rect.maxX - length, y: rect.maxY))
         path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
         path.line(to: NSPoint(x: rect.maxX, y: rect.maxY - length))
 
-        // Bottom-right corner.
+        // Bottom-right
         path.move(to: NSPoint(x: rect.maxX, y: rect.minY + length))
         path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
         path.line(to: NSPoint(x: rect.maxX - length, y: rect.minY))
 
-        // Bottom-left corner.
+        // Bottom-left
         path.move(to: NSPoint(x: rect.minX + length, y: rect.minY))
         path.line(to: NSPoint(x: rect.minX, y: rect.minY))
         path.line(to: NSPoint(x: rect.minX, y: rect.minY + length))
@@ -162,7 +314,6 @@ final class ScreenshotOverlayView: NSView {
         let padding = ScreenshotConstants.sizeLabelPadding
         let offset = ScreenshotConstants.sizeLabelOffset
 
-        // Place the label just outside the bottom-right corner of the selection.
         var labelRect = NSRect(
             x: rect.maxX + offset,
             y: rect.maxY + offset,
@@ -170,19 +321,15 @@ final class ScreenshotOverlayView: NSView {
             height: size.height + padding
         )
 
-        // If the label would overflow the right edge, place it inside the selection.
         if labelRect.maxX > bounds.maxX {
             labelRect.origin.x = rect.maxX - labelRect.width - offset
         }
-        // If the label would overflow the top edge, place it below the selection.
         if labelRect.maxY > bounds.maxY {
             labelRect.origin.y = rect.minY - labelRect.height - offset
         }
-        // Clamp horizontally.
         if labelRect.minX < bounds.minX {
             labelRect.origin.x = bounds.minX + offset
         }
-        // Clamp vertically.
         if labelRect.minY < bounds.minY {
             labelRect.origin.y = bounds.minY + offset
         }
